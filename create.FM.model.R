@@ -1,160 +1,110 @@
-particle.filter.FM <- function(site_num){
-  source("SSLPM.r") ## Super Simple Logistic Model
-  source("ciEnvelope.R")
-  source("global_input_parameters.R")
-  source("update.r.R")  
-  
-  ########################################
-  #### dummy values for debugging ########
-  ########################################
-  site_num=1
-  
-  ### See also ph.filter.sd below
-  
-  ### observation data (real thing should be cleaned, rescaled GCC and NDVI from 2013 only)
-  obs=list()
-  #obs$GCC= c(rep(NA,182),cumsum(c(1,rnorm(344-182,-.005,.00001))))
-  obs$NDVI= c(rep(NA,182),cumsum(c(1,rnorm(344-182,-.005,.00002))))
-  obs$NDVI[210:240]=NA #
-  #obs$GCC[230:260]=NA #
-  #########################################
-  #########################################
+create.FM.model <- function(site_num){
+  # The function create.FM.model takes output from the state space model and
+  # makes an initial (data free) forecast through the end of the year.
+  # The forecast is plotted in a pdf begining with ParticleFilterForecast,
+  # (with a site number and date appended). The output from the 
+  # current forecast is saved in a file begining with ForecastModel.X.out (with a 
+  # site number and date appended).
   
   ## set up model time frame
+  source("global_input_parameters.R")
   model.start.DOY=global_input_parameters$model.start.DOY
   cur_date = Sys.Date()
-  doy <- strftime(cur_date, format = "%j")
   current.year = as.numeric(format(Sys.Date(), "%Y"))
-  time = model.start.DOY:doy
-  nt = length(time)
-  
-  #load GCC data
-  gcc.data <- read.csv( sprintf("gcc_data_site%i.csv",site_num) )
-  # Current year only
-  years=as.numeric(strftime(gcc.data$date,"%Y"))
-  current.year.gcc.data=subset(gcc.data,years == current.year)
-  # fall only
-  days=as.numeric(strftime(current.year.gcc.data$date,"%j"))
-  fall.cy.gcc.data = subset(current.year.gcc.data,days >= model.start.DOY)
-  
-  #load NDVI data
-  ndvi.data <- read.csv( sprintf("ndvi_data_site%i.csv",site_num) )
-  # Current year only
-  years=as.numeric(strftime(ndvi.data$date,"%Y"))
-  current.year.ndvi.data=subset(ndvi.data,years == current.year)
-  # fall only
-  days=as.numeric(strftime(current.year.ndvi.data$date,"%j"))
-  fall.cy.ndvi.data = subset(current.year.ndvi.data,days >= model.start.DOY)
+  time = model.start.DOY:365  
   
   ### read in output from State Space Model for X and r
   file_name = paste('Jags.SS.out.site',as.character(site_num), 'RData',sep=".")
   load(file_name)
-  X.from.SS = as.matrix(jags.out.all.years.array[,5,])
-  r.from.SS = as.matrix(jags.out.all.years.array[,1,])  
+  # There are now two new variables loaded: SS.years is a vector of the years of 
+  # the SS model, jags.out.all.years.array is a M x N x P array, where:
+  # M is the number of chains times the number of iterations,
+  # N is 4 + the number of days being modeled [r  tau_add  tau_gcc  tau_ndvi	X]
+  # X will use (366-model.start.DOY columns),
+  # P is the number of years being modeled (same as length(SS.years))
   
-  #initial values for each ensemble member (average of all years of historical data)
-  X.orig=apply(X.from.SS,1,mean)
-  r.orig=apply(r.from.SS,1,mean)
+  X.from.SS = as.matrix(jags.out.all.years.array[,5,]) # M x P, first day prior
+  r.from.SS = as.matrix(jags.out.all.years.array[,1,]) # M x P prior on r  
   
-  #take ensemble size from the size of the SS fit ensemble
-  ne=length(X.orig)
+  # initial conditions for each ensemble member (average of all years of historical 
+  # data)
+  X.ic = apply(X.from.SS,1,mean)
+  r.ic = apply(r.from.SS,1,mean)
   
-  ## Create a filter with GCC and NDVI equally weighted (uses only one data source if the other is NA)
-  GCC=fall.cy.gcc.data[,4]
-  #NDVI=fall.cy.ndvi.data[,2?]
-  length = length(GCC)
-  ph.filter=array(NA,(length))
-  for(i in 1:length) {
-    if (!is.na(GCC[i]) & !is.na(NDVI[i])) {
-      val = mean(GCC[i], NDVI[i])
-      ph.filter[i]=val
-    } else if (!is.na(GCC[i]) & is.na(NDVI[i])) {
-      ph.filter[i] = GCC[i] 
-    } else if (is.na(NDVI[i]) & !is.na(NDVI[i])) {
-      ph.filter[i] = NDVI[i] 
-    }
-  }
+  # take ensemble size from the size of the SS fit ensemble
+  num.ensembles = length(X.ic)
   
-  ## just the fall dates
-  ph.filter=ph.filter[time] 
+  ### Analysis step:
+  # No data! So none to be done yet!
   
-  ## not sure how we will error for the particle weights, so I'm using 50% of the mean for now 
-  ph.filter.sd = ph.filter*.5
+  ### Resampling step:
+  # No data -> no likelihood -> no resampling yet!
   
-  ### resampling particle filter
-  sample=0
-  hist.r=list()  ## since we resample parameters, create a record of what values were used each step
-  hist.r[[1]] = r ## initial parameter conditions
-  X = X.orig  ## reset state to the initial values, not the final values from the previous ensemble
-  r = r.orig
-  output = array(NA,c(nt,ne,2)) ## initialize output
+  # The array "output" will hold all of our X and r values for all ensemble members
+  # and all days:
+  output = array(NA,c(length(time), num.ensembles, 2)) ## initialize output
   
-  ###### here's the actual forecast loop
-  for(t in 1:nt){
-    
+  # We need to seed it with our initial conditions:
+  output[1,,1] = X.ic
+  output[1,,2] = r.ic
+  
+  ###### Forecast loop:
+  print(paste("Forecasting for initial particle filter for site",
+              as.character(site_num)))
+  source("SSLPM.R")
+  for(t in 2:length(time)){
+    X = output[t-1,,1]
+    r = output[t-1,,2]
     ## forward step
-    output[t,,]=as.matrix(SSLPM(X,r))
-    X=output[t,,1]
-    r=output[t,,2]
+    output[t,,] = SSLPM(X,r) # num.ensembles x 2
     
-    ## analysis step
-    #if(t%%(48*1) == 0){ ## if remainder == 0  ####### this peice is here as a template in case we don't filter every single day
-    sample = sample+1
-    print(sample)
-    if(!is.na(ph.filter[sample])) {  ## if observation is present
-      
-      ## calulate Likelihood (weights)
-      Lm = apply(output[t:1, ,1],2,mean) ## model filter over obs period
-      wt = dnorm(ph.filter[sample],Lm,ph.filter.sd[sample])
-      
-      ## resample 
-      index = sample.int(ne,ne,replace=TRUE,prob=wt)
-      X = X[index]
-      r = update.r(r,index)    
-    }
-    hist.r[[sample+1]] = r
-    
-    #}
   }
   ##### end of forecast loop
-  
-  ## save X and r output to use in updating forecast model
-  X.output_file_name = paste('ForecastModel.X.out.site',as.character(site_num), 'RData',sep=".")
-  save(X,file = X.output_file_name)
-  r.output_file_name = paste('ForecastModel.r.out.site',as.character(site_num), 'RData',sep=".")
-  save(r,file = output_file_name)
-  
-  ### save output 
-  output_file_name = paste('ForecastModel.X.out.site',as.character(site_num), 'RData',sep=".")
+  print("Initial forecasting complete.")
+    
+  ### save output (not sure if we want to save all of it... maybe just the most recent day's?)
+  output_file_name = paste("ForecastModel.X.out.site", as.character(site_num),
+                           "RData",sep=".")
   save(output,file = output_file_name)
   
-  ## Extract and summarize ph.filter
-  ph.filter.pr = t(output[,,1])
-  ph.filter.ci  = apply(ph.filter.pr,2,quantile,c(0.025,0.5,0.975))
-  
-  #### saves output so that it can appended to as the forecast iterates
-  ph.output_file_name = paste('ForecastModel.out.site',as.character(site_num), 'RData',sep=".")
-  save(ph.filter.pr,file = ph.output_file_name)
-  
+  ## Plot our forecast!
+  X.mat = output[,,1]
+  X.ci  = apply(X.mat,1,quantile,c(0.025,0.5,0.975))
+    
   #### save plot produced to PDF
+  # Date of the last data point used in the forecast:
+  date.string <- paste(as.character(current.year),
+                       format(as.Date(model.start.DOY-2,origin="2001-01-01"), 
+                              format="%m-%d"),sep="-") 
+  # Complicated! But just a date string to put in the file name. For the create FM 
+  # model it's the day BEFORE the first day of data.
+  
   ## name of output file
-  file_name = paste('ParticleFilterForecast',as.character(site_num), 'pdf',sep=".")
+  file_name = paste("ParticleFilterForecast",as.character(site_num),
+                    as.character(date.string),"pdf",sep=".")
+  
+  
   ## saves as PDF
   pdf(file=file_name)
   
-  ##plot filter
-  plot(time,ph.filter.ci[2,],type='n',ylab="NDVI_GCC",xlab="Time")
-  ciEnvelope(time,ph.filter.ci[1,],ph.filter.ci[3,],col="light grey")
-  points(time,ph.filter)    
+  ## plot forecast:
+  plot(time,X.ci[2,],type='n',main=paste("Particle Filter Forecast:",date.string)
+       ,xlab="Day of Year",ylab="Pheno-state")
+  source("ciEnvelope.R")
+  ciEnvelope(time,X.ci[1,],X.ci[3,],col="light grey")
+  lines(time,X.ci[2,],main=paste("Particle Filter Forecast:",date.string)
+        ,xlab="Day of Year",ylab="Pheno-state")
   
   ## ends plot output to PDF
   dev.off()
   
   ## name of initial ensemble forecast file
-print(sprintf('The particle filter forecast for site No %.f is saved as %s',site_num,file_name))
+  print(sprintf("The particle filter forecast for site Num %.f is saved as %s",site_num,file_name))
   
-  ### need nt and sample for particle filter update
-  inputs.for.updating.forecast <- c(nt,sample)
-  return(inputs.for.updating.forecast)
-  
+  #### Save a file that contains the date of the last forecast:
+  last.date.filename <- paste("last.update.site", as.character(site_num), 
+                              "txt",sep=".")
+  sink(last.date.filename, append = FALSE)
+  cat("\"",date.string,"\"",sep="")
+  sink()  
 }  
